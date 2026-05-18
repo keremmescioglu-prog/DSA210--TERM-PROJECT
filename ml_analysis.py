@@ -2,25 +2,30 @@
 """
 DSA 210 - Milestone 2: Machine Learning Methods
 Project: Analyzing Movie Success - What Makes a Movie Profitable?
+
+This script applies three ML approaches:
+1. Regression: Predict movie revenue using budget, genre, ratings, etc.
+2. Classification: Predict whether a movie will be profitable (binary)
+3. Clustering: Discover natural groupings of movies (unsupervised)
 """
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy import stats
 import os
 import warnings
 warnings.filterwarnings('ignore')
 
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, GradientBoostingRegressor, GradientBoostingClassifier
+from sklearn.ensemble import (RandomForestRegressor, RandomForestClassifier,
+                              GradientBoostingRegressor, GradientBoostingClassifier)
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import (mean_squared_error, mean_absolute_error, r2_score,
                              accuracy_score, precision_score, recall_score, f1_score,
-                             confusion_matrix, classification_report, roc_curve, auc)
+                             confusion_matrix, roc_curve, auc)
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 
@@ -37,50 +42,48 @@ print("=" * 60)
 print("1. DATA LOADING & FEATURE ENGINEERING")
 print("=" * 60)
 
-df = pd.read_csv('data/movies_cleaned_light.csv')
+# Load the cleaned dataset from Milestone 1
+df = pd.read_csv('movies_cleaned_light.csv')
 print(f"Dataset: {df.shape[0]} rows, {df.shape[1]} columns")
 
-# --- Feature Engineering ---
+# --- Feature Engineering for ML ---
 
-# Encode primary genre
+# One-hot encode top 10 genres (group rare genres as 'Other')
 top_genres = df['primary_genre'].value_counts().head(10).index.tolist()
 df['genre_encoded'] = df['primary_genre'].apply(lambda x: x if x in top_genres else 'Other')
 genre_dummies = pd.get_dummies(df['genre_encoded'], prefix='genre', drop_first=True)
 df = pd.concat([df, genre_dummies], axis=1)
 
-# Encode original language (English vs non-English)
+# Binary flag for English-language films (dominates the dataset)
 df['is_english'] = (df['original_language'] == 'en').astype(int)
 
-# Log-transform budget and revenue (to handle skewness)
-df['log_budget'] = np.log1p(df['budget'])
+# Log-transform revenue to handle right skewness
+# (a few blockbusters earn billions; most films earn under $50M)
 df['log_revenue'] = np.log1p(df['revenue'])
 
-# Budget categories
-df['budget_category'] = pd.qcut(df['budget'], q=4, labels=['Low', 'Medium-Low', 'Medium-High', 'High'])
-
-# Feature columns for ML
+# Define feature columns for ML models
 feature_cols = ['budget', 'vote_average', 'vote_count', 'popularity',
                 'runtime', 'num_genres', 'cast_size', 'is_english',
                 'release_month'] + [c for c in genre_dummies.columns]
 
-# Remove rows with NaN in features
+# Remove any rows with missing values in our feature set
 df_ml = df.dropna(subset=feature_cols + ['revenue', 'is_profitable'])
 print(f"ML-ready samples: {len(df_ml)}")
 print(f"Features: {len(feature_cols)}")
 
+# Prepare feature matrix and target variables
 X = df_ml[feature_cols].values
-y_revenue = df_ml['revenue'].values
-y_log_revenue = df_ml['log_revenue'].values
-y_profitable = df_ml['is_profitable'].values.astype(int)
+y_log_revenue = df_ml['log_revenue'].values      # For regression
+y_profitable = df_ml['is_profitable'].values.astype(int)  # For classification
 
-# Train-test split (80/20)
+# 80/20 train-test split with fixed seed for reproducibility
 X_train, X_test, y_rev_train, y_rev_test = train_test_split(
     X, y_log_revenue, test_size=0.2, random_state=42)
 
 _, _, y_prof_train, y_prof_test = train_test_split(
     X, y_profitable, test_size=0.2, random_state=42)
 
-# Scale features
+# Scale features (important for linear models; tree models don't need it but it doesn't hurt)
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
@@ -97,6 +100,10 @@ print("\n" + "=" * 60)
 print("2. REGRESSION: Predicting Movie Revenue (log-transformed)")
 print("=" * 60)
 
+# Three models of increasing complexity:
+# - Linear Regression: baseline, assumes linear relationships
+# - Random Forest: captures non-linear patterns, resistant to outliers
+# - Gradient Boosting: iteratively corrects errors, often best for tabular data
 regression_models = {
     'Linear Regression': LinearRegression(),
     'Random Forest': RandomForestRegressor(n_estimators=100, max_depth=15, random_state=42),
@@ -106,7 +113,7 @@ regression_models = {
 reg_results = {}
 
 for name, model in regression_models.items():
-    # Use scaled data for Linear Regression, raw for tree-based
+    # Linear Regression benefits from scaled features; tree models work on raw data
     if name == 'Linear Regression':
         model.fit(X_train_scaled, y_rev_train)
         y_pred = model.predict(X_test_scaled)
@@ -128,7 +135,7 @@ for name, model in regression_models.items():
     print(f"    R²:   {r2:.4f}")
     print(f"    5-Fold CV R²: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
 
-# --- Regression: Actual vs Predicted Plot ---
+# --- Figure 09: Actual vs Predicted Revenue ---
 fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 for i, (name, result) in enumerate(reg_results.items()):
     axes[i].scatter(y_rev_test, result['predictions'], alpha=0.4, s=20, color='steelblue')
@@ -145,7 +152,7 @@ plt.savefig('plots/09_regression_predictions.png', dpi=150)
 plt.close()
 print("\nPlot saved: 09_regression_predictions.png")
 
-# --- Feature Importance (from best tree model) ---
+# --- Figure 10: Feature Importance (Regression) ---
 best_reg = regression_models['Gradient Boosting']
 importances = best_reg.feature_importances_
 feat_imp = pd.DataFrame({'feature': feature_cols, 'importance': importances})
@@ -160,7 +167,7 @@ plt.savefig('plots/10_feature_importance_regression.png', dpi=150)
 plt.close()
 print("Plot saved: 10_feature_importance_regression.png")
 
-# --- Regression Model Comparison ---
+# --- Figure 11: Regression Model Comparison ---
 reg_comparison = pd.DataFrame({
     name: {k: v for k, v in result.items() if k != 'predictions'}
     for name, result in reg_results.items()
@@ -189,6 +196,7 @@ print("\n" + "=" * 60)
 print("3. CLASSIFICATION: Predicting Movie Profitability")
 print("=" * 60)
 
+# Four classifiers: simple to complex
 classification_models = {
     'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
     'Decision Tree': DecisionTreeClassifier(max_depth=10, random_state=42),
@@ -232,7 +240,7 @@ for name, model in classification_models.items():
     print(f"    AUC:       {roc_auc:.4f}")
     print(f"    5-Fold CV Accuracy: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
 
-# --- ROC Curves ---
+# --- Figure 12: ROC Curves ---
 fig, ax = plt.subplots(figsize=(8, 7))
 colors_roc = ['#e74c3c', '#2ecc71', '#3498db', '#9b59b6']
 for i, (name, result) in enumerate(clf_results.items()):
@@ -248,7 +256,7 @@ plt.savefig('plots/12_roc_curves.png', dpi=150)
 plt.close()
 print("\nPlot saved: 12_roc_curves.png")
 
-# --- Confusion Matrices ---
+# --- Figure 13: Confusion Matrices ---
 fig, axes = plt.subplots(1, 4, figsize=(20, 4))
 for i, (name, result) in enumerate(clf_results.items()):
     cm = confusion_matrix(y_prof_test, result['predictions'])
@@ -264,7 +272,7 @@ plt.savefig('plots/13_confusion_matrices.png', dpi=150)
 plt.close()
 print("Plot saved: 13_confusion_matrices.png")
 
-# --- Classification Model Comparison ---
+# --- Figure 14: Classification Model Comparison ---
 clf_comparison = pd.DataFrame({
     name: {k: v for k, v in result.items() if k not in ['predictions', 'probabilities', 'fpr', 'tpr']}
     for name, result in clf_results.items()
@@ -288,7 +296,7 @@ plt.savefig('plots/14_classification_comparison.png', dpi=150)
 plt.close()
 print("Plot saved: 14_classification_comparison.png")
 
-# --- Feature Importance (Classification) ---
+# --- Figure 15: Feature Importance (Classification) ---
 best_clf = classification_models['Gradient Boosting']
 importances_clf = best_clf.feature_importances_
 feat_imp_clf = pd.DataFrame({'feature': feature_cols, 'importance': importances_clf})
@@ -310,11 +318,13 @@ print("\n" + "=" * 60)
 print("4. CLUSTERING: Discovering Movie Groups")
 print("=" * 60)
 
+# Use key financial and quality features for clustering
 cluster_features = ['budget', 'revenue', 'vote_average', 'popularity', 'runtime']
 X_cluster = df_ml[cluster_features].dropna().values
 X_cluster_scaled = StandardScaler().fit_transform(X_cluster)
 
-# Elbow method
+# --- Figure 16: Elbow Method ---
+# Find optimal K by looking for the "elbow" in the inertia curve
 inertias = []
 K_range = range(2, 11)
 for k in K_range:
@@ -332,12 +342,13 @@ plt.savefig('plots/16_elbow_method.png', dpi=150)
 plt.close()
 print("Plot saved: 16_elbow_method.png")
 
-# Apply K-Means with K=4
+# Apply K-Means with K=4 (selected from elbow analysis)
 optimal_k = 4
 kmeans = KMeans(n_clusters=optimal_k, random_state=42, n_init=10)
 clusters = kmeans.fit_predict(X_cluster_scaled)
 
-# PCA for visualization
+# --- Figure 17: PCA Visualization of Clusters ---
+# Reduce to 2D for visualization while preserving maximum variance
 pca = PCA(n_components=2)
 X_pca = pca.fit_transform(X_cluster_scaled)
 
@@ -352,22 +363,19 @@ plt.savefig('plots/17_clusters_pca.png', dpi=150)
 plt.close()
 print("Plot saved: 17_clusters_pca.png")
 
-# Cluster profiles
+# --- Cluster Profile Analysis ---
 df_clustered = df_ml[cluster_features].dropna().copy()
 df_clustered['cluster'] = clusters
 
 print("\n--- Cluster Profiles ---")
 cluster_profiles = df_clustered.groupby('cluster').agg({
-    'budget': 'median',
-    'revenue': 'median',
-    'vote_average': 'mean',
-    'popularity': 'mean',
-    'runtime': 'mean'
+    'budget': 'median', 'revenue': 'median',
+    'vote_average': 'mean', 'popularity': 'mean', 'runtime': 'mean'
 }).round(2)
-
 cluster_sizes = df_clustered['cluster'].value_counts().sort_index()
 cluster_profiles['count'] = cluster_sizes.values
 
+# Assign descriptive labels based on cluster characteristics
 labels = []
 for idx, row in cluster_profiles.iterrows():
     if row['budget'] > cluster_profiles['budget'].median() and row['revenue'] > cluster_profiles['revenue'].median():
@@ -386,7 +394,7 @@ for idx, row in cluster_profiles.iterrows():
     print(f"    Avg Popularity: {row['popularity']:.1f}")
     print(f"    Avg Runtime:    {row['runtime']:.0f} min")
 
-# Cluster profile heatmap
+# --- Figure 18: Cluster Profiles Heatmap ---
 fig, ax = plt.subplots(figsize=(10, 5))
 profile_normalized = cluster_profiles.drop('count', axis=1).copy()
 for col in profile_normalized.columns:
@@ -408,13 +416,13 @@ print("5. MILESTONE 2 SUMMARY")
 print("=" * 60)
 
 print("\n--- Regression (Revenue Prediction) ---")
-print(f"  Best model: Gradient Boosting (R² = {reg_results['Gradient Boosting']['R²']:.3f})")
+best_reg_name = max(reg_results, key=lambda x: reg_results[x]['R²'])
+print(f"  Best model: {best_reg_name} (R² = {reg_results[best_reg_name]['R²']:.3f})")
 print(f"  Top predictors: budget, popularity, vote_count")
 
 print("\n--- Classification (Profitability) ---")
 best_clf_name = max(clf_results, key=lambda x: clf_results[x]['F1'])
 print(f"  Best model: {best_clf_name} (F1 = {clf_results[best_clf_name]['F1']:.3f}, AUC = {clf_results[best_clf_name]['AUC']:.3f})")
-print(f"  Top predictors: budget, popularity, vote_count")
 
 print("\n--- Clustering ---")
 print(f"  Optimal K: {optimal_k}")
